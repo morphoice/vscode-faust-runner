@@ -54,17 +54,20 @@ header input[type=checkbox] { margin:0; }
 
 #grid {
   flex:1 1 auto; display:grid; gap:0; background:var(--bord); min-height:0;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(120px, var(--scopeW, 1fr)) 1px minmax(120px, 1fr);
   grid-template-rows: var(--paramH, 140px) 1px 1fr;
   grid-template-areas:
-    "params   params"
-    "resizer  resizer"
-    "scope    analyzer";
+    "params   params   params"
+    "resizer  resizer  resizer"
+    "scope    hresizer analyzer";
 }
 #paramPane { grid-area: params; min-height: 28px; }
 #vresizer  { grid-area: resizer; cursor: ns-resize; background: var(--bord); position: relative; }
 #vresizer::after { content:""; position:absolute; left:0; right:0; top:-2px; bottom:-2px; }
 #vresizer:hover, #vresizer.dragging { background: var(--m-acc); }
+#hresizer  { grid-area: hresizer; cursor: ew-resize; background: var(--bord); position: relative; }
+#hresizer::after { content:""; position:absolute; top:0; bottom:0; left:-3px; right:-3px; }
+#hresizer:hover, #hresizer.dragging { background: var(--m-acc); }
 #scopePane { grid-area: scope; }
 #anaPane   { grid-area: analyzer; }
 #grid section { background:var(--bg); padding:4px 6px; overflow:hidden; display:flex; flex-direction:column; min-height:0; }
@@ -182,9 +185,12 @@ header input[type=checkbox] { margin:0; }
 @media (max-width: 480px) {
   #grid {
     grid-template-columns: 1fr;
+    grid-template-rows: var(--paramH, 140px) 1px minmax(120px, 1fr) minmax(120px, 1fr);
     grid-template-areas:
       "params"
+      "resizer"
       "scope"
       "analyzer";
   }
+  #hresizer { display:none; }
 }

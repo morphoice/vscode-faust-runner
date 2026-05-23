@@ -95,6 +95,7 @@ class FaustRunnerProvider {
         <div class="ctlrow overlay" id="scopeCtl"></div>
       </div>
     </section>
+    <div id="hresizer" title="Drag to resize scope and analyzer"></div>
     <section id="anaPane">
       <div class="canvasWrap">
         <canvas id="analyzer"></canvas>

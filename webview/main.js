@@ -1022,6 +1022,7 @@ window.addEventListener('drop', async (e) => {
 // Ask extension to send current DSP source
 // Draggable splitter between params and scope/analyzer
 const vresizer = document.getElementById('vresizer');
+const hresizer = document.getElementById('hresizer');
 const grid = document.getElementById('grid');
 const PARAMS_KEY = 'faust-paramH';
 const savedH = parseInt(localStorage.getItem(PARAMS_KEY) || '', 10);
@@ -1046,6 +1047,36 @@ if (vresizer) {
     };
     vresizer.addEventListener('pointermove', move);
     vresizer.addEventListener('pointerup', up);
+  });
+}
+
+const SCOPE_W_KEY = 'faust-scopeW';
+const savedScopeW = parseFloat(localStorage.getItem(SCOPE_W_KEY) || '');
+if (!Number.isNaN(savedScopeW) && savedScopeW > 0.15 && savedScopeW < 0.85) {
+  grid.style.setProperty('--scopeW', (savedScopeW * 100).toFixed(2) + '%');
+}
+if (hresizer) {
+  hresizer.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    hresizer.setPointerCapture(e.pointerId);
+    hresizer.classList.add('dragging');
+    const move = (ev) => {
+      const gridRect = grid.getBoundingClientRect();
+      const ratio = Math.max(0.18, Math.min(0.82, (ev.clientX - gridRect.left) / gridRect.width));
+      grid.style.setProperty('--scopeW', (ratio * 100).toFixed(2) + '%');
+    };
+    const up = (ev) => {
+      hresizer.releasePointerCapture(ev.pointerId);
+      hresizer.classList.remove('dragging');
+      hresizer.removeEventListener('pointermove', move);
+      hresizer.removeEventListener('pointerup', up);
+      const gridRect = grid.getBoundingClientRect();
+      const left = hresizer.getBoundingClientRect().left - gridRect.left;
+      const ratio = Math.max(0.18, Math.min(0.82, left / gridRect.width));
+      localStorage.setItem(SCOPE_W_KEY, ratio.toFixed(4));
+    };
+    hresizer.addEventListener('pointermove', move);
+    hresizer.addEventListener('pointerup', up);
   });
 }
 
