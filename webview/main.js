@@ -36,6 +36,7 @@ const ui = {
   srcLoopLbl: document.getElementById('srcLoopLbl'),
   srcDevice: document.getElementById('srcDevice'),
   srcDeviceRefresh: document.getElementById('srcDeviceRefresh'),
+  polyOn: document.getElementById('polyOn'),
   midiOn: document.getElementById('midiOn'),
   midiPort: document.getElementById('midiPort'),
   status: document.getElementById('status'),
@@ -73,6 +74,7 @@ const state = {
   svgZoom: 1,
   svgDragged: false,
   svgPointerLink: null,
+  polyphonic: false,
   playing: false,
   sourceEnabled: true,
 };
@@ -134,6 +136,12 @@ function initMidiIfNeeded() {
 
 const kbdRow = document.getElementById('kbdRow');
 const midiRefresh = document.getElementById('midiRefresh');
+const POLY_KEY = 'faust-polyOn';
+ui.polyOn.checked = localStorage.getItem(POLY_KEY) === '1';
+ui.polyOn?.addEventListener('change', async () => {
+  localStorage.setItem(POLY_KEY, ui.polyOn.checked ? '1' : '0');
+  if (state.ctx && state.dspCode) await compileAndAttach({ recompileOnly: true });
+});
 const applyMidiUI = () => {
   kbdRow.style.display = ui.midiOn.checked ? 'block' : 'none';
   if (ui.midiOn.checked) initMidiIfNeeded();
@@ -148,10 +156,14 @@ function routeMidi(ev) {
   if (!n) return;
   try {
     if (ev.type === 'noteon') {
-      if (n.keyOn) n.keyOn(0, ev.midi, Math.round(ev.velocity * 127));
-      else { trySet(n, 'freq', 440 * Math.pow(2, (ev.midi - 69) / 12)); trySet(n, 'gain', ev.velocity); trySet(n, 'gate', 1); }
+      if (state.polyphonic && n.keyOn) n.keyOn(0, ev.midi, Math.round(ev.velocity * 127));
+      else {
+        trySet(n, 'freq', 440 * Math.pow(2, (ev.midi - 69) / 12));
+        trySet(n, 'gain', ev.velocity);
+        trySet(n, 'gate', 1);
+      }
     } else if (ev.type === 'noteoff') {
-      if (n.keyOff) n.keyOff(0, ev.midi, 0);
+      if (state.polyphonic && n.keyOff) n.keyOff(0, ev.midi, 0);
       else { trySet(n, 'gate', 0); }
     } else if (ev.type === 'cc') {
       n.ctrlChange && n.ctrlChange(0, ev.cc, Math.round(ev.value * 127));
@@ -163,8 +175,58 @@ function routeMidi(ev) {
 
 function trySet(n, paramSuffix, value) {
   const paths = (n.getParams ? n.getParams() : []) || [];
-  const match = paths.find(p => p.toLowerCase().endsWith('/' + paramSuffix));
-  if (match) n.setParamValue(match, value);
+  const suffix = '/' + paramSuffix.toLowerCase();
+  const match = paths.find(p => {
+    const clean = p.toLowerCase().replace(/\[[^\]]*\]/g, '').trim();
+    return clean.endsWith(suffix);
+  });
+  if (!match) return false;
+  n.setParamValue(match, value);
+  return true;
+}
+
+function flattenUiItems(items, out = []) {
+  for (const item of items || []) {
+    if (item.items) flattenUiItems(item.items, out);
+    else out.push(item);
+  }
+  return out;
+}
+
+function cleanAddressTail(address) {
+  return String(address || '').split('/').pop().replace(/\[[^\]]*\]/g, '').trim().toLowerCase();
+}
+
+function hasPolyVoiceControls(uiDescriptor) {
+  const tails = new Set(flattenUiItems(uiDescriptor).map(item => cleanAddressTail(item.address)));
+  return tails.has('freq') && tails.has('gate');
+}
+
+function getNvoices(meta) {
+  const entries = Array.isArray(meta?.meta) ? meta.meta : [];
+  for (const entry of entries) {
+    const options = entry?.options;
+    if (typeof options !== 'string') continue;
+    const match = options.match(/\[nvoices:(\d+)\]/);
+    if (match) return Math.max(1, parseInt(match[1], 10));
+  }
+  return -1;
+}
+
+function silenceCurrentNode() {
+  const n = state.faustNode;
+  if (!n) return;
+  try {
+    if (state.polyphonic && n.keyOff) {
+      for (const midi of state.midi.activeNotes) n.keyOff(0, midi, 0);
+    }
+    if (n.allNotesOff) n.allNotesOff();
+    trySet(n, 'gate', 0);
+  } catch (e) {
+    log('panic before recompile failed: ' + (e.message || e), 'wrn');
+  }
+  state.midi.activeNotes.clear();
+  state.midi.refreshKbd();
 }
 
 // ---------- Faust ----------
@@ -356,19 +418,35 @@ async function compileAndAttach({ recompileOnly = false } = {}) {
 
   setStatus('compiling…');
   try {
-    const { FaustMonoDspGenerator } = state.faustModule;
-    const gen = new FaustMonoDspGenerator();
+    const { FaustMonoDspGenerator, FaustPolyDspGenerator } = state.faustModule;
+    let gen = new FaustMonoDspGenerator();
     await gen.compile(state.compiler, state.dspName, state.dspCode, '-I libraries/');
-    const newNode = await gen.createNode(state.ctx);
+    let descriptor = [];
+    try { descriptor = gen.getUI ? gen.getUI() : []; } catch (e) {}
+    let meta = null;
+    try { meta = gen.getMeta ? gen.getMeta() : null; } catch (e) {}
+    const configuredVoices = Math.max(1, Number(window.__faustInit?.voices || 8));
+    const declaredVoices = getNvoices(meta);
+    const voices = declaredVoices > 0 ? declaredVoices : configuredVoices;
+    const usePoly = declaredVoices > 0 || (!!ui.polyOn?.checked && voices > 1 && hasPolyVoiceControls(descriptor));
+
+    if (usePoly) {
+      gen = new FaustPolyDspGenerator();
+      await gen.compile(state.compiler, state.dspName, state.dspCode, '-I libraries/');
+    }
+
+    const newNode = usePoly ? await gen.createNode(state.ctx, voices) : await gen.createNode(state.ctx);
     if (!newNode) throw new Error('createNode returned null (compile probably failed silently)');
 
     // disconnect old
     if (state.faustNode) {
+      silenceCurrentNode();
       try { state.captureIn.disconnect(); } catch (e) {}
       try { state.faustNode.disconnect(); } catch (e) {}
       state.faustNode = null;
     }
     state.faustNode = newNode;
+    state.polyphonic = usePoly;
 
     // wire: src -> captureIn -> faust -> captureOut
     rewireSource();
@@ -380,8 +458,9 @@ async function compileAndAttach({ recompileOnly = false } = {}) {
     }
 
     setStatus(recompileOnly ? 'recompiled ✓' : 'compiled ✓', 'ok');
-    log(`compiled "${state.dspName}" (${newNode.getNumInputs()}→${newNode.getNumOutputs()}) [mono]`, 'ok');
-    postInfo(`Faust: ${recompileOnly ? 'recompiled' : 'compiled'} ${state.dspName} (${newNode.getNumInputs()}→${newNode.getNumOutputs()})`, 'ok');
+    const mode = usePoly ? `poly ${voices} voices` : 'mono';
+    log(`compiled "${state.dspName}" (${newNode.getNumInputs()}→${newNode.getNumOutputs()}) [${mode}]`, 'ok');
+    postInfo(`Faust: ${recompileOnly ? 'recompiled' : 'compiled'} ${state.dspName} (${newNode.getNumInputs()}→${newNode.getNumOutputs()}, ${mode})`, 'ok');
   } catch (e) {
     setStatus('compile error', 'err');
     log('compile failed: ' + (e.message || e), 'err');

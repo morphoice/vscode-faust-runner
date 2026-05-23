@@ -78,6 +78,7 @@ class FaustRunnerProvider {
       <select id="srcDevice" title="Audio input device" style="display:none; min-width:160px"></select>
       <button id="srcDeviceRefresh" title="Rescan input devices" style="display:none; padding:2px 5px">↻</button>
       <span class="sep"></span>
+      <label><input type="checkbox" id="polyOn"> poly</label>
       <label><input type="checkbox" id="midiOn"> MIDI in</label>
       <select id="midiPort" title="MIDI input device" style="min-width:140px"></select>
       <button id="midiRefresh" title="Rescan MIDI devices" style="padding:2px 5px">↻</button>
