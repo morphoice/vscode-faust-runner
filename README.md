@@ -14,7 +14,7 @@ Optional HISE plugin lint catches HISE-specific gotchas (`freq`/`gate`/`gain` ma
 - **Spectrum analyzer**: FFT 512–16384, six windows incl. flat-top + Kaiser, log frequency, dBFS, exp / max-hold averaging, peak hold with decay, **input/output overlay**, **frequency-response (out/in)** mode, parabolic-interpolated cursor readout, click-a-fundamental harmonic markers.
 - **Hot reload**: save a `.dsp` → recompile and swap the worklet node in place.
 - **Optional HISE lint**: forbidden `/` in labels, warning when `gate` isn't a `button`, warning on `key`/`vel`/`velocity`/`bend` labels that vanilla Faust auto-wires but HISE silently ignores, and a check that a wrapper XML exists in `../../Networks/` with matching `ClassId`. Only activates when the `.dsp` lives inside a HISE-shaped folder.
-- **Block-diagram view**: `Faust: Show block diagram` opens the `process.svg` produced by `faust -svg`.
+- **Block-diagram view**: the runner panel can generate navigable SVG diagrams with `faustwasm`; `Faust: Show block diagram` also opens the `process.svg` produced by the local `faust -svg`.
 
 ## Install
 

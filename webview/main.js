@@ -20,6 +20,16 @@ const ui = {
   play: document.getElementById('play'),
   panic: document.getElementById('panic'),
   recompile: document.getElementById('recompile'),
+  svgToggle: document.getElementById('svgToggle'),
+  svgPanel: document.getElementById('svgPanel'),
+  svgSelect: document.getElementById('svgSelect'),
+  svgZoomOut: document.getElementById('svgZoomOut'),
+  svgZoomReset: document.getElementById('svgZoomReset'),
+  svgZoomIn: document.getElementById('svgZoomIn'),
+  svgRefresh: document.getElementById('svgRefresh'),
+  svgClose: document.getElementById('svgClose'),
+  svgCanvas: document.getElementById('svgCanvas'),
+  svgEmpty: document.getElementById('svgEmpty'),
   srcKind: document.getElementById('srcKind'),
   srcFile: document.getElementById('srcFile'),
   srcLoop: document.getElementById('srcLoop'),
@@ -57,6 +67,12 @@ const state = {
   dspCode: '',
   dspName: 'untitled',
   dspPath: '',
+  svgMap: null,
+  svgCodeKey: '',
+  svgCurrent: '',
+  svgZoom: 1,
+  svgDragged: false,
+  svgPointerLink: null,
   playing: false,
   sourceEnabled: true,
 };
@@ -222,6 +238,117 @@ function makeCapture(ctx, tag) {
   return node;
 }
 
+// ---------- SVG block diagrams ----------
+
+function setSvgVisible(visible) {
+  if (!ui.svgPanel) return;
+  ui.svgPanel.style.display = visible ? 'flex' : 'none';
+}
+
+function svgCodeKey() {
+  return `${state.dspName}\n${state.dspCode}`;
+}
+
+function orderedSvgNames(svgMap) {
+  return Object.keys(svgMap || {}).sort((a, b) => {
+    if (a === 'process.svg') return -1;
+    if (b === 'process.svg') return 1;
+    return a.localeCompare(b);
+  });
+}
+
+function normalizeSvgName(href) {
+  if (!href) return '';
+  const noHash = String(href).split('#')[0];
+  const file = noHash.slice(noHash.lastIndexOf('/') + 1);
+  try { return decodeURIComponent(file); }
+  catch (e) { return file; }
+}
+
+function findSvgName(href) {
+  const name = normalizeSvgName(href);
+  if (!name || !state.svgMap) return '';
+  if (state.svgMap[name]) return name;
+  const match = Object.keys(state.svgMap).find(k => normalizeSvgName(k) === name);
+  return match || '';
+}
+
+function getSvgLinkHref(link) {
+  if (!link) return '';
+  return link.getAttribute('href')
+    || link.getAttribute('xlink:href')
+    || link.getAttributeNS('http://www.w3.org/1999/xlink', 'href')
+    || link.href?.baseVal
+    || '';
+}
+
+function applySvgZoom() {
+  const svg = ui.svgCanvas?.querySelector('svg');
+  if (!svg) return;
+  svg.style.width = `${Math.round(state.svgZoom * 100)}%`;
+  svg.style.maxWidth = 'none';
+  svg.style.height = 'auto';
+}
+
+function renderSvgDiagram(name) {
+  const svg = state.svgMap && state.svgMap[name];
+  if (!svg) {
+    if (ui.svgCanvas) ui.svgCanvas.innerHTML = '';
+    if (ui.svgEmpty) ui.svgEmpty.style.display = 'flex';
+    return;
+  }
+  const doc = new DOMParser().parseFromString(svg, 'image/svg+xml');
+  const svgEl = doc.documentElement;
+  if (!svgEl || svgEl.nodeName.toLowerCase() !== 'svg') {
+    log(`svg: ${name} did not contain an SVG root`, 'wrn');
+    return;
+  }
+  ui.svgCanvas.innerHTML = '';
+  ui.svgCanvas.appendChild(document.importNode(svgEl, true));
+  state.svgCurrent = name;
+  if (ui.svgSelect && ui.svgSelect.value !== name) ui.svgSelect.value = name;
+  applySvgZoom();
+  if (ui.svgEmpty) ui.svgEmpty.style.display = 'none';
+}
+
+function populateSvgSelect(names) {
+  ui.svgSelect.innerHTML = '';
+  for (const name of names) {
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = name;
+    ui.svgSelect.appendChild(opt);
+  }
+}
+
+async function generateSvgDiagrams({ force = false } = {}) {
+  if (!state.dspCode) {
+    log('svg: no DSP code loaded', 'wrn');
+    return;
+  }
+  const key = svgCodeKey();
+  if (!force && state.svgMap && state.svgCodeKey === key) return;
+
+  await ensureFaust();
+  const SvgDiagrams = state.faustModule.FaustSvgDiagrams;
+  if (!SvgDiagrams) throw new Error('FaustSvgDiagrams is not available in this faustwasm build');
+
+  setStatus('generating SVG...');
+  const svgDiagrams = new SvgDiagrams(state.compiler);
+  const rawSvgs = svgDiagrams.from(state.dspName, state.dspCode, '-I libraries/');
+  const svgs = rawSvgs instanceof Map ? Object.fromEntries(rawSvgs) : rawSvgs;
+  const names = orderedSvgNames(svgs);
+  if (!names.length) throw new Error('no SVG diagrams were generated');
+
+  state.svgMap = svgs;
+  state.svgCodeKey = key;
+  populateSvgSelect(names);
+  ui.svgSelect.value = names.includes('process.svg') ? 'process.svg' : names[0];
+  renderSvgDiagram(ui.svgSelect.value);
+  setStatus(`SVG ${names.length} diagram${names.length > 1 ? 's' : ''}`, 'ok');
+  log(`generated SVG diagrams: ${names.join(', ')}`);
+}
+
 async function compileAndAttach({ recompileOnly = false } = {}) {
   if (!state.dspCode) { log('no DSP code yet', 'wrn'); return; }
   await ensureFaust();
@@ -248,6 +375,9 @@ async function compileAndAttach({ recompileOnly = false } = {}) {
 
     // build UI
     await buildFaustUI(newNode);
+    if (ui.svgPanel && ui.svgPanel.style.display !== 'none') {
+      try { await generateSvgDiagrams({ force: true }); } catch (e) { log('svg failed: ' + (e.message || e), 'err'); }
+    }
 
     setStatus(recompileOnly ? 'recompiled ✓' : 'compiled ✓', 'ok');
     log(`compiled "${state.dspName}" (${newNode.getNumInputs()}→${newNode.getNumOutputs()}) [mono]`, 'ok');
@@ -626,6 +756,68 @@ ui.srcKind.addEventListener('focusout', () => {
 const browseBtn = document.getElementById('srcFilePick');
 if (browseBtn) browseBtn.addEventListener('click', () => vscode.postMessage({ type: 'pickFile' }));
 ui.recompile.addEventListener('click', () => compileAndAttach({ recompileOnly: true }));
+ui.svgToggle?.addEventListener('click', async () => {
+  const visible = ui.svgPanel && ui.svgPanel.style.display !== 'none';
+  setSvgVisible(!visible);
+  if (!visible) {
+    try { await generateSvgDiagrams(); } catch (e) { log('svg failed: ' + (e.message || e), 'err'); }
+  }
+});
+ui.svgClose?.addEventListener('click', () => setSvgVisible(false));
+ui.svgRefresh?.addEventListener('click', async () => {
+  try { await generateSvgDiagrams({ force: true }); } catch (e) { log('svg failed: ' + (e.message || e), 'err'); }
+});
+ui.svgSelect?.addEventListener('change', () => renderSvgDiagram(ui.svgSelect.value));
+ui.svgZoomOut?.addEventListener('click', () => {
+  state.svgZoom = Math.max(0.25, state.svgZoom / 1.25);
+  applySvgZoom();
+});
+ui.svgZoomReset?.addEventListener('click', () => {
+  state.svgZoom = 1;
+  applySvgZoom();
+});
+ui.svgZoomIn?.addEventListener('click', () => {
+  state.svgZoom = Math.min(8, state.svgZoom * 1.25);
+  applySvgZoom();
+});
+ui.svgCanvas?.addEventListener('pointerdown', (e) => {
+  if (e.button !== 0) return;
+  const viewport = ui.svgCanvas.parentElement;
+  if (!viewport) return;
+  state.svgDragged = false;
+  state.svgPointerLink = e.target.closest && e.target.closest('a');
+  ui.svgCanvas.classList.add('dragging');
+  const startX = e.clientX, startY = e.clientY;
+  const startLeft = viewport.scrollLeft, startTop = viewport.scrollTop;
+  const move = (ev) => {
+    const dx = ev.clientX - startX;
+    const dy = ev.clientY - startY;
+    if (Math.abs(dx) + Math.abs(dy) > 2) state.svgDragged = true;
+    viewport.scrollLeft = startLeft - dx;
+    viewport.scrollTop = startTop - dy;
+  };
+  const up = (ev) => {
+    ui.svgCanvas.classList.remove('dragging');
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', up);
+    if (!state.svgDragged && state.svgPointerLink) {
+      const href = getSvgLinkHref(state.svgPointerLink);
+      const name = findSvgName(href);
+      if (name) renderSvgDiagram(name);
+      else log(`svg: missing linked diagram ${normalizeSvgName(href) || href}`, 'wrn');
+      try { state.svgPointerLink.blur(); } catch (e) {}
+    }
+    state.svgPointerLink = null;
+  };
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', up);
+});
+ui.svgCanvas?.parentElement?.addEventListener('wheel', (e) => {
+  if (!e.ctrlKey) return;
+  e.preventDefault();
+  state.svgZoom = Math.max(0.25, Math.min(8, state.svgZoom * (e.deltaY > 0 ? 0.8 : 1.25)));
+  applySvgZoom();
+}, { passive: false });
 ui.srcLoop.addEventListener('change', () => { if (state.ctx && ui.srcKind.value === 'file') rewireSource(); });
 ui.panic.addEventListener('click', () => {
   state.midi.activeNotes.forEach(m => state.midi.fireOff(m));
@@ -692,6 +884,8 @@ window.addEventListener('message', async (event) => {
     state.dspCode = msg.code;
     state.dspName = (msg.name || 'untitled').replace(/[^A-Za-z0-9_]/g, '_');
     state.dspPath = msg.path || '';
+    state.svgMap = null;
+    state.svgCodeKey = '';
     log(`loaded ${msg.name}${msg.reload ? ' (reload)' : ''}`);
     if (msg.autoplay) {
       // Editor ▶ pressed — always go through startPlayback to ensure ctx + resume + compile.

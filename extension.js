@@ -56,6 +56,7 @@ class FaustRunnerProvider {
     <div class="row">
       <button id="panic" title="MIDI panic / all notes off">Panic</button>
       <button id="recompile" title="Force recompile">↻</button>
+      <button id="svgToggle" title="Show Faust SVG block diagram">SVG</button>
       <span class="sep"></span>
       <label>Src:
         <select id="srcKind">
@@ -99,6 +100,21 @@ class FaustRunnerProvider {
         <div class="ctlrow overlay" id="anaCtl"></div>
       </div>
     </section>
+  </div>
+  <div id="svgPanel" style="display:none">
+    <div id="svgToolbar">
+      <span>Diagram</span>
+      <select id="svgSelect" title="SVG diagram"></select>
+      <button id="svgZoomOut" title="Zoom out">−</button>
+      <button id="svgZoomReset" title="Reset zoom">100%</button>
+      <button id="svgZoomIn" title="Zoom in">+</button>
+      <button id="svgRefresh" title="Regenerate SVG">↻</button>
+      <button id="svgClose" title="Close SVG viewer">×</button>
+    </div>
+    <div id="svgViewport">
+      <div id="svgCanvas" aria-label="Faust SVG block diagram"></div>
+      <div id="svgEmpty">No SVG diagram generated yet</div>
+    </div>
   </div>
   <footer id="errBar"><pre id="log"></pre><button id="errDismiss" title="dismiss">×</button></footer>
   <div id="kbdRow"><div id="kbd"></div></div>
