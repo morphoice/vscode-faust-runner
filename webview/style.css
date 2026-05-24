@@ -47,7 +47,7 @@ header input[type=checkbox] { margin:0; }
 .status.ok  { color:var(--ok); }
 
 #kbdRow { display:none; flex:0 0 auto; padding:4px 6px; border-top:1px solid var(--bord); background:var(--bg); overflow-x:auto; }
-#kbd { display:flex; user-select:none; position:relative; height:50px; min-width:max-content; }
+#kbd { display:flex; user-select:none; position:relative; height:50px; width:max-content; min-width:max-content; margin:0 auto; }
 #kbd .key { border:1px solid var(--bord); background:#eaeaea; color:#222; width:22px; height:50px; display:flex; align-items:flex-end; justify-content:center; padding-bottom:2px; font-size:9px; cursor:pointer; }
 #kbd .key.bk { background:#222; color:#aaa; width:14px; height:32px; margin-left:-7px; margin-right:-7px; z-index:2; }
 #kbd .key.on { background:var(--acc); color:#fff; }

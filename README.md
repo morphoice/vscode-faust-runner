@@ -40,6 +40,8 @@ code --extensionDevelopmentPath=$(pwd)
 
 Or open the folder in VS Code and press **F5** ("Run Extension") to launch a second window with the extension loaded.
 
+Or use `open -n -a "Visual Studio Code" --args --extensionDevelopmentPath="$(pwd)"` on macOS.
+
 ## First run
 
 1. Install or have a [Faust compiler](https://faust.grame.fr) on `$PATH` (needed for editor diagnostics and block-diagram SVG; the runner panel itself uses WASM and works without it).
