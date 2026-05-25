@@ -225,8 +225,7 @@ function silenceCurrentNode() {
   } catch (e) {
     log('panic before recompile failed: ' + (e.message || e), 'wrn');
   }
-  state.midi.activeNotes.clear();
-  state.midi.refreshKbd();
+  state.midi.clearActiveState();
 }
 
 // ---------- Faust ----------
@@ -900,7 +899,7 @@ ui.svgCanvas?.parentElement?.addEventListener('wheel', (e) => {
 }, { passive: false });
 ui.srcLoop.addEventListener('change', () => { if (state.ctx && ui.srcKind.value === 'file') rewireSource(); });
 ui.panic.addEventListener('click', () => {
-  state.midi.activeNotes.forEach(m => state.midi.fireOff(m));
+  state.midi.allNotesOff();
   if (state.faustNode && state.faustNode.allNotesOff) state.faustNode.allNotesOff();
 });
 
