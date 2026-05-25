@@ -1,6 +1,11 @@
-// Source signal generators. Each builder returns an AudioNode you can connect.
-// All sources are mono; downstream code splits/duplicates as needed.
+// Source signal generators for the runner's "Src" selector.
+//
+// Each builder returns a started AudioNode that main.js can connect to the input
+// capture worklet. Synthetic sources are mono; downstream Web Audio nodes
+// duplicate or split channels as needed.
 
+// Looping white or pink noise buffer. Pink noise uses Paul Kellett's lightweight
+// filter approximation, good enough for voicing and transfer-response checks.
 export function makeNoise(ctx, type) {
   const sr = ctx.sampleRate;
   const bufLen = sr * 2;
@@ -28,12 +33,15 @@ export function makeNoise(ctx, type) {
   return src;
 }
 
+// Simple oscillator source for quick level and filter checks.
 export function makeSine(ctx, hz = 440) {
   const o = ctx.createOscillator();
   o.type = 'sine'; o.frequency.value = hz; o.start();
   return o;
 }
 
+// Looping logarithmic sweep. The waveform is generated into a buffer so it can
+// be treated like every other finite Web Audio source.
 export function makeSweep(ctx, fStart = 20, fEnd = 20000, durSec = 4) {
   const sr = ctx.sampleRate;
   const N = Math.floor(sr * durSec);
@@ -52,6 +60,8 @@ export function makeSweep(ctx, fStart = 20, fEnd = 20000, durSec = 4) {
   return src;
 }
 
+// One-sample impulse repeated at a fixed rate, useful for envelope and impulse
+// response inspection in the scope/analyzer.
 export function makeImpulse(ctx, perSec = 1) {
   const sr = ctx.sampleRate;
   const N = Math.floor(sr / perSec);
@@ -62,6 +72,8 @@ export function makeImpulse(ctx, perSec = 1) {
   return src;
 }
 
+// Short shaped click train. The half-sine click avoids a hard discontinuity at
+// the end of the pulse while still being easy to trigger from.
 export function makeClickTrain(ctx, perSec = 10, widthMs = 0.5) {
   const sr = ctx.sampleRate;
   const N = Math.floor(sr / perSec);
@@ -74,6 +86,8 @@ export function makeClickTrain(ctx, perSec = 10, widthMs = 0.5) {
   return src;
 }
 
+// Microphone/input-device source with processing disabled so measurements are
+// not distorted by browser echo cancellation or automatic gain.
 export async function makeMic(ctx, deviceId) {
   const audio = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
   if (deviceId) audio.deviceId = { exact: deviceId };
@@ -83,6 +97,8 @@ export async function makeMic(ctx, deviceId) {
   return node;
 }
 
+// BufferSource helper for decoded audio files. BufferSource nodes are one-shot,
+// so main.js recreates them whenever playback restarts.
 export async function makeFile(ctx, audioBuffer, loop = true) {
   const src = ctx.createBufferSource();
   src.buffer = audioBuffer;
@@ -91,11 +107,13 @@ export async function makeFile(ctx, audioBuffer, loop = true) {
   return src;
 }
 
+// Decode bytes received from the extension host or file drop into an AudioBuffer.
 export async function decodeBytes(ctx, bytes) {
   const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   return ctx.decodeAudioData(arr.buffer.slice(arr.byteOffset, arr.byteOffset + arr.byteLength));
 }
 
+// Stop, disconnect, and release any backing MediaStream tracks for a source.
 export function disposeSource(node) {
   if (!node) return;
   try { node.stop && node.stop(); } catch (e) {}

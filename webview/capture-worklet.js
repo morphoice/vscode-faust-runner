@@ -1,8 +1,16 @@
-// AudioWorklet that captures the input channels into a rolling buffer
-// and either passes the audio through or sinks it.
-// Posts a snapshot of the rolling buffer at ~30 Hz.
+// AudioWorklet used as a tap in the runner graph.
+//
+// Each instance stores stereo audio in a rolling buffer, optionally passes the
+// signal through, and posts an unwrapped snapshot to the UI thread about 30
+// times per second. main.js uses one instance before Faust and one after Faust
+// so the scope/analyzer can inspect both sides of the DSP.
 
 class CaptureProcessor extends AudioWorkletProcessor {
+  // processorOptions:
+  // - tag: "in" or "out", echoed back with posted buffers,
+  // - size: rolling buffer length in samples,
+  // - passThrough: whether audio should continue through this worklet,
+  // - postIntervalSec: UI update cadence.
   constructor(options) {
     super();
     const o = options.processorOptions || {};
@@ -17,6 +25,9 @@ class CaptureProcessor extends AudioWorkletProcessor {
     this.intervalSamples = Math.floor(this.postIntervalSec * sampleRate);
   }
 
+  // Copy the current render quantum into the ring buffer, mirror the signal to
+  // the output if requested, and periodically post an ordered copy where the
+  // newest sample lands at the end of the arrays.
   process(inputs, outputs) {
     const input = inputs[0];
     const output = outputs[0];

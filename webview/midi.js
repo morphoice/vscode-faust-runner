@@ -1,21 +1,51 @@
-// MIDI input (WebMIDI) + on-screen QWERTY keyboard.
-// All note events are dispatched to `onEvent({type:'noteon'|'noteoff'|'cc'|'bend', ...})`.
+// MIDI input hub for the runner webview.
+//
+// This class normalizes three input sources into the same event stream:
+// - hardware MIDI from WebMIDI,
+// - the computer keyboard,
+// - the on-screen piano keyboard.
+//
+// Note events are emitted as:
+//   { type:'noteon'|'noteoff', midi, velocity? }
+// Control events are emitted as:
+//   { type:'cc', cc, value } and { type:'bend', value }
+//
+// The hub also owns the visual note state for the on-screen keyboard, so every
+// source highlights the same MIDI keys.
 
 export class MidiHub {
   constructor() {
     this.onEvent = null;
     this.access = null;
     this.activeInput = null;
+
+    // Public active-note view used by main.js for panic/recompile cleanup and
+    // by refreshKbd() for highlighting keys.
     this.activeNotes = new Set();
+
+    // Internal hold tracking by MIDI note and source. A note may be held by
+    // more than one source at once, for example the hardware keyboard and the
+    // computer keyboard. The note-off event is emitted only when the last source
+    // releases that MIDI note.
     this.noteHolds = new Map();
+
+    // Source-specific state needed to release exactly the note that was started
+    // by a given physical computer key or pointer id.
     this.heldQwerty = new Map();
     this.pointerHolds = new Map();
+
     this.baseOctave = 2;
     this.numOctaves = 5;
+
+    // Character fallback for older browsers or layouts that do not provide a
+    // stable KeyboardEvent.code. This preserves the original QWERTY mapping.
     this.qwertyMap = {
       'a':0, 'w':1, 's':2, 'e':3, 'd':4, 'f':5, 't':6, 'g':7, 'y':8, 'h':9, 'u':10, 'j':11,
       'k':12, 'o':13, 'l':14, 'p':15, ';':16, "'":17
     };
+
+    // Physical-key mapping. KeyboardEvent.code is layout-independent, which
+    // keeps the same piano layout on macOS AZERTY, QWERTY, and other layouts.
     this.qwertyCodeMap = {
       KeyA:0, KeyW:1, KeyS:2, KeyE:3, KeyD:4, KeyF:5, KeyT:6, KeyG:7, KeyY:8, KeyH:9, KeyU:10, KeyJ:11,
       KeyK:12, KeyO:13, KeyL:14, KeyP:15, Semicolon:16, Quote:17
@@ -24,6 +54,9 @@ export class MidiHub {
     document.addEventListener('keyup',   (e) => this.onKey(e, false));
   }
 
+  // Initialize WebMIDI and populate the hardware input selector. The QWERTY and
+  // on-screen keyboards work without WebMIDI; failure here only hides hardware
+  // input controls.
   async init(selectEl, onEvent, onAvailability) {
     this.onEvent = onEvent;
     const notify = (avail, reason) => onAvailability && onAvailability(avail, reason);
@@ -59,6 +92,8 @@ export class MidiHub {
     selectEl.addEventListener('change', () => this.selectInput(selectEl.value));
   }
 
+  // Switch the active hardware MIDI input and disconnect the previous input
+  // listener to avoid duplicated note events.
   selectInput(id) {
     if (this.activeInput) this.activeInput.onmidimessage = null;
     this.activeInput = null;
@@ -69,6 +104,9 @@ export class MidiHub {
     inp.onmidimessage = (e) => this.handleRaw(e.data);
   }
 
+  // Decode one raw WebMIDI packet. Channel voice messages keep their high nibble
+  // in `status`; this intentionally accepts all MIDI channels and lets main.js
+  // route them to Faust channel 0.
   handleRaw(data) {
     if (!this.onEvent) return;
     const status = data[0] & 0xf0;
@@ -80,6 +118,9 @@ export class MidiHub {
     }
   }
 
+  // Return true when the packet is a hardware note event. MIDI keyboards often
+  // use note-on with zero velocity instead of an explicit note-off status, so
+  // both forms are normalized here.
   handleHardwareNote(status, midi, velocity) {
     if (status === 0x90 && velocity > 0) {
       this.fireOn(midi, velocity / 127, 'hardware');
@@ -93,6 +134,9 @@ export class MidiHub {
     return false;
   }
 
+  // Start a note for one source. The first source holding a MIDI note emits the
+  // actual note-on event; later sources only keep the note alive visually and
+  // prevent premature note-off.
   fireOn(midi, vel = 0.8, source = 'external') {
     let holds = this.noteHolds.get(midi);
     if (!holds) {
@@ -106,6 +150,9 @@ export class MidiHub {
     if (!wasActive) this.onEvent && this.onEvent({ type:'noteon', midi, velocity: vel });
     this.refreshKbd();
   }
+
+  // Release one source from a note. The actual note-off is emitted only when no
+  // source still holds that MIDI note.
   fireOff(midi, source = 'external') {
     const holds = this.noteHolds.get(midi);
     if (holds) {
@@ -122,10 +169,15 @@ export class MidiHub {
     this.onEvent && this.onEvent({ type:'noteoff', midi });
     this.refreshKbd();
   }
+
+  // Emit note-off for every active MIDI note, then clear all source bookkeeping.
   allNotesOff() {
     for (const midi of [...this.activeNotes]) this.fireOff(midi, 'all');
     this.clearActiveState();
   }
+
+  // Clear visual and source state without emitting events. Used after main.js
+  // has already silenced or replaced the Faust node during panic/recompile.
   clearActiveState() {
     this.activeNotes.clear();
     this.noteHolds.clear();
@@ -134,12 +186,17 @@ export class MidiHub {
     this.refreshKbd();
   }
 
+  // Map computer-key events to MIDI notes. The source id is based on the
+  // physical key code so keyup releases the same note that keydown started,
+  // even if the octave is changed while the note is held.
   onKey(e, down) {
     if (e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.target && /input|textarea|select/i.test(e.target.tagName)) return;
     const key = e.key.toLowerCase();
     const offset = this.qwertyCodeMap[e.code] ?? this.qwertyMap[key];
     if (offset === undefined) {
+      // Octave shortcuts are only handled when the key is not part of the piano
+      // mapping for the current browser/layout.
       if (e.code === 'KeyZ' || key === 'z') { if (down) { this.baseOctave = Math.max(0, this.baseOctave - 1); this.renderKbd(); } return; }
       if (e.code === 'KeyX' || key === 'x') { if (down) { this.baseOctave = Math.min(8, this.baseOctave + 1); this.renderKbd(); } return; }
       return;
@@ -161,6 +218,8 @@ export class MidiHub {
     e.preventDefault();
   }
 
+  // Render the on-screen piano for the current octave window. The generated keys
+  // are intentionally lightweight divs because the CSS supplies the piano shape.
   renderKbd(container = this._kbd) {
     if (!container) return;
     this._kbd = container;
@@ -174,6 +233,9 @@ export class MidiHub {
       el.className = 'key' + (isBlack ? ' bk' : '');
       el.dataset.midi = m;
       if (pc === 0) el.textContent = 'C' + Math.floor(m / 12 - 1);
+
+      // Pointer ids become note sources so multi-touch/chord playing on the
+      // on-screen keyboard follows the same hold rules as hardware/QWERTY input.
       el.addEventListener('pointerdown', (ev) => {
         ev.preventDefault();
         this.pointerHolds.set(ev.pointerId, m);
@@ -199,6 +261,7 @@ export class MidiHub {
     this.refreshKbd();
   }
 
+  // Synchronize CSS highlighting from the active MIDI note set.
   refreshKbd() {
     if (!this._kbd) return;
     for (const el of this._kbd.children) {

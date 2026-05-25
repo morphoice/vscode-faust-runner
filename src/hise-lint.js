@@ -1,7 +1,14 @@
+// HISE-specific lint layer for Faust files.
+//
+// These checks complement the real Faust compiler diagnostics. They only run
+// inside HISE's DspNetworks/CodeLibrary/faust layout and warn about conventions
+// that Faust accepts but HISE handles poorly or silently ignores.
+
 const path = require('path');
 const fs = require('fs');
 const vscode = require('vscode');
 
+// Detect the HISE Faust source location without requiring project metadata.
 function isHiseFaustFile(filePath) {
   return /DspNetworks[\\/]+CodeLibrary[\\/]+faust[\\/]+[^\\/]+\.dsp$/i.test(filePath);
 }
@@ -9,11 +16,15 @@ function isHiseFaustFile(filePath) {
 const MAGIC_LABELS = new Set(['freq', 'gate', 'gain']);
 const VANILLA_ONLY_LABELS = new Set(['key', 'vel', 'velocity', 'bend', 'pitchwheel']);
 
+// Scan Faust widget declarations for labels HISE treats specially, then verify
+// the matching wrapper XML exists in the sibling Networks directory.
 function lint(document) {
   const diags = [];
   if (!isHiseFaustFile(document.uri.fsPath)) return diags;
 
   const text = document.getText();
+  // Faust widget labels may include metadata in brackets. HISE's magic MIDI
+  // wiring is based on the visible label before that metadata.
   const widgetRegex = /\b(hslider|vslider|nentry|button|checkbox)\s*\(\s*"([^"]*)"/g;
 
   let m;
@@ -50,6 +61,8 @@ function lint(document) {
     }
   }
 
+  // HISE scriptnode DSPs need a wrapper XML that references the DSP ClassId.
+  // A wrapper with the same basename as the .dsp collides with generated files.
   const dspName = path.basename(document.uri.fsPath, '.dsp');
   const dspDir = path.dirname(document.uri.fsPath);
   const networksDir = path.resolve(dspDir, '..', '..', 'Networks');

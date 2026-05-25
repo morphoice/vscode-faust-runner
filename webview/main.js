@@ -1,7 +1,10 @@
-// Orchestrator: load @grame/faustwasm, compile current .dsp, build audio graph:
+// Browser-side runner orchestrator.
+//
+// It loads @grame/faustwasm, receives the current DSP from the VS Code extension
+// host, compiles it, builds the Web Audio graph:
 //   source -> captureIn -> faustNode -> captureOut -> destination
-// Wire MIDI events into the poly node (or directly to freq/gain/gate for mono).
-// Hot-reload on save messages from the extension host.
+// and wires UI controls, MIDI events, hot-reload, scope/analyzer captures, audio
+// file loading, microphone input, and Faust SVG diagrams.
 
 import { Scope } from './scope.js';
 import { Analyzer } from './analyzer.js';
@@ -16,6 +19,8 @@ const FAUSTUI_CDN = 'https://cdn.jsdelivr.net/npm/@shren/faust-ui@1';
 
 const vscode = acquireVsCodeApi();
 
+// Cached DOM references. Keeping these in one object makes it obvious which
+// elements are expected from extension.js's webview HTML.
 const ui = {
   play: document.getElementById('play'),
   panic: document.getElementById('panic'),
@@ -50,6 +55,8 @@ const ui = {
   anaCtl: document.getElementById('anaCtl'),
 };
 
+// Runtime state shared by the orchestration functions below. Audio graph nodes
+// are nullable because the webview is created before the user starts playback.
 const state = {
   ctx: null,
   faustModule: null,
@@ -79,6 +86,8 @@ const state = {
   sourceEnabled: true,
 };
 
+// Log to devtools and, for errors, to the in-panel error strip and extension
+// status item.
 function log(msg, cls = '') {
   // Devtools console always; UI error bar only for crucial errors.
   if (cls === 'err') console.error('[faust] ' + msg);
@@ -95,6 +104,8 @@ function log(msg, cls = '') {
     try { vscode.postMessage({ type: 'info', text: msg, severity: 'err' }); } catch (e) {}
   }
 }
+
+// Post a sticky status message to the extension host status-bar item.
 function postInfo(msg, severity = '') {
   try { vscode.postMessage({ type: 'info', text: msg, severity }); } catch (e) {}
 }
@@ -102,6 +113,8 @@ document.getElementById('errDismiss')?.addEventListener('click', () => {
   if (ui.log) ui.log.innerHTML = '';
   if (ui.errBar) ui.errBar.style.display = 'none';
 });
+
+// Update the compact status label in the webview header.
 function setStatus(text, cls = '') { ui.status.textContent = text; ui.status.className = 'status ' + cls; }
 
 window.addEventListener('error', (e) => log('JS error: ' + e.message, 'err'));
@@ -113,6 +126,9 @@ const analyzer = new Analyzer(ui.analyzer, ui.anaCtl, () => state.latestOut, () 
 state.midi.renderKbd(ui.kbd);
 
 const midiRefreshBtn = document.getElementById('midiRefresh');
+
+// Hardware MIDI is opt-in. The computer keyboard still works when WebMIDI is
+// unavailable, denied, or hidden.
 const hideHwMidi = (reason) => {
   if (ui.midiPort) ui.midiPort.style.display = 'none';
   if (midiRefreshBtn) midiRefreshBtn.style.display = 'none';
@@ -122,6 +138,9 @@ const hideHwMidi = (reason) => {
 hideHwMidi();
 
 let _midiInitialized = false;
+
+// Lazily request WebMIDI only when the MIDI row is enabled, avoiding a browser
+// permission prompt during ordinary audio-only use.
 function initMidiIfNeeded() {
   if (_midiInitialized) return;
   _midiInitialized = true;
@@ -151,6 +170,8 @@ applyMidiUI();
 
 midiRefresh?.addEventListener('click', () => { _midiInitialized = false; initMidiIfNeeded(); });
 
+// Route normalized MidiHub events into the active Faust node. Polyphonic nodes
+// receive keyOn/keyOff; mono nodes use the conventional freq/gain/gate controls.
 function routeMidi(ev) {
   const n = state.faustNode;
   if (!n) return;
@@ -173,6 +194,8 @@ function routeMidi(ev) {
   } catch (e) { log('midi route err: ' + e.message, 'wrn'); }
 }
 
+// Set a Faust parameter by suffix after stripping Faust label metadata. This
+// keeps mono MIDI routing tolerant of group paths and metadata annotations.
 function trySet(n, paramSuffix, value) {
   const paths = (n.getParams ? n.getParams() : []) || [];
   const suffix = '/' + paramSuffix.toLowerCase();
@@ -185,6 +208,7 @@ function trySet(n, paramSuffix, value) {
   return true;
 }
 
+// Flatten Faust UI descriptor groups into a plain list for polyphony detection.
 function flattenUiItems(items, out = []) {
   for (const item of items || []) {
     if (item.items) flattenUiItems(item.items, out);
@@ -193,15 +217,18 @@ function flattenUiItems(items, out = []) {
   return out;
 }
 
+// Normalize a Faust parameter address to the lowercase leaf name.
 function cleanAddressTail(address) {
   return String(address || '').split('/').pop().replace(/\[[^\]]*\]/g, '').trim().toLowerCase();
 }
 
+// Faust poly nodes require at least freq and gate controls in the voice UI.
 function hasPolyVoiceControls(uiDescriptor) {
   const tails = new Set(flattenUiItems(uiDescriptor).map(item => cleanAddressTail(item.address)));
   return tails.has('freq') && tails.has('gate');
 }
 
+// Read `[nvoices:N]` from Faust metadata. Returns -1 when not declared.
 function getNvoices(meta) {
   const entries = Array.isArray(meta?.meta) ? meta.meta : [];
   for (const entry of entries) {
@@ -213,6 +240,8 @@ function getNvoices(meta) {
   return -1;
 }
 
+// Before recompiling or disconnecting a node, release active MIDI notes and
+// force gate/allNotesOff so no stale voices keep sounding.
 function silenceCurrentNode() {
   const n = state.faustNode;
   if (!n) return;
@@ -230,6 +259,7 @@ function silenceCurrentNode() {
 
 // ---------- Faust ----------
 
+// Load faustwasm and create a compiler singleton for this webview.
 async function ensureFaust() {
   if (state.compiler) return;
   setStatus('loading libfaust…');
@@ -243,6 +273,8 @@ async function ensureFaust() {
   log('libfaust loaded');
 }
 
+// Create the AudioContext and install the capture worklet. The multiple
+// addModule strategies handle CSP and URI quirks across VS Code webview builds.
 async function ensureCtx() {
   if (state.ctx) return;
   state.ctx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
@@ -284,6 +316,7 @@ async function ensureCtx() {
   log(`audio context @ ${state.ctx.sampleRate} Hz`);
 }
 
+// Create one capture tap and update state.latestIn/latestOut from posted buffers.
 function makeCapture(ctx, tag) {
   const node = new AudioWorkletNode(ctx, 'faust-capture', {
     numberOfInputs: 1,
@@ -301,15 +334,18 @@ function makeCapture(ctx, tag) {
 
 // ---------- SVG block diagrams ----------
 
+// Show or hide the in-panel SVG viewer.
 function setSvgVisible(visible) {
   if (!ui.svgPanel) return;
   ui.svgPanel.style.display = visible ? 'flex' : 'none';
 }
 
+// Cache key for generated SVG diagrams; changes when the DSP name or code does.
 function svgCodeKey() {
   return `${state.dspName}\n${state.dspCode}`;
 }
 
+// Prefer process.svg first, then stable alphabetical order for linked diagrams.
 function orderedSvgNames(svgMap) {
   return Object.keys(svgMap || {}).sort((a, b) => {
     if (a === 'process.svg') return -1;
@@ -318,6 +354,7 @@ function orderedSvgNames(svgMap) {
   });
 }
 
+// Normalize SVG link hrefs to a generated SVG file name.
 function normalizeSvgName(href) {
   if (!href) return '';
   const noHash = String(href).split('#')[0];
@@ -326,6 +363,7 @@ function normalizeSvgName(href) {
   catch (e) { return file; }
 }
 
+// Resolve an SVG hyperlink target against the current diagram map.
 function findSvgName(href) {
   const name = normalizeSvgName(href);
   if (!name || !state.svgMap) return '';
@@ -334,6 +372,7 @@ function findSvgName(href) {
   return match || '';
 }
 
+// Read href attributes across plain SVG, xlink, and animated SVG APIs.
 function getSvgLinkHref(link) {
   if (!link) return '';
   return link.getAttribute('href')
@@ -343,6 +382,7 @@ function getSvgLinkHref(link) {
     || '';
 }
 
+// Apply zoom by changing the rendered SVG width, leaving intrinsic viewBox intact.
 function applySvgZoom() {
   const svg = ui.svgCanvas?.querySelector('svg');
   if (!svg) return;
@@ -351,6 +391,7 @@ function applySvgZoom() {
   svg.style.height = 'auto';
 }
 
+// Parse one generated SVG string and render it in the panel.
 function renderSvgDiagram(name) {
   const svg = state.svgMap && state.svgMap[name];
   if (!svg) {
@@ -372,6 +413,7 @@ function renderSvgDiagram(name) {
   if (ui.svgEmpty) ui.svgEmpty.style.display = 'none';
 }
 
+// Populate the diagram selector from generated SVG names.
 function populateSvgSelect(names) {
   ui.svgSelect.innerHTML = '';
   for (const name of names) {
@@ -382,6 +424,8 @@ function populateSvgSelect(names) {
   }
 }
 
+// Generate all Faust SVG diagrams in-browser through faustwasm and cache them
+// until the DSP source changes or the user forces refresh.
 async function generateSvgDiagrams({ force = false } = {}) {
   if (!state.dspCode) {
     log('svg: no DSP code loaded', 'wrn');
@@ -410,6 +454,8 @@ async function generateSvgDiagrams({ force = false } = {}) {
   log(`generated SVG diagrams: ${names.join(', ')}`);
 }
 
+// Compile the current DSP, choose mono/poly generation, replace the old node,
+// rebuild the parameter UI, and reconnect the source/capture graph.
 async function compileAndAttach({ recompileOnly = false } = {}) {
   if (!state.dspCode) { log('no DSP code yet', 'wrn'); return; }
   await ensureFaust();
@@ -473,6 +519,8 @@ async function compileAndAttach({ recompileOnly = false } = {}) {
   }
 }
 
+// Build compact custom controls from the Faust UI descriptor rather than using
+// the external Faust UI renderer, so the runner can match its panel layout.
 async function buildFaustUI(node) {
   ui.faustUi.innerHTML = '';
   state.meterUpdaters = [];
@@ -499,11 +547,13 @@ async function buildFaustUI(node) {
   }
 }
 
+// Strip Faust metadata suffixes such as `[style:knob]` from visible labels.
 function cleanLabel(label) {
   if (!label) return '';
   return label.replace(/\[[^\]]*\]/g, '').trim() || label;
 }
 
+// Recursively render one Faust UI descriptor item.
 function renderUiItem(item, parent, node) {
   const type = item.type;
   if (type === 'vgroup' || type === 'hgroup' || type === 'tgroup') {
@@ -524,6 +574,8 @@ function renderUiItem(item, parent, node) {
   }
 }
 
+// Canvas knob used for hslider/vslider controls, with linear/log scaling,
+// pointer drag, wheel adjustment, shift-fine mode, and double-click reset.
 function makeKnob(item, node) {
   const wrap = document.createElement('div');
   wrap.className = 'fui-ctl fui-knob';
@@ -624,6 +676,7 @@ function makeKnob(item, node) {
   return wrap;
 }
 
+// Numeric entry control for Faust nentry widgets.
 function makeNentry(item, node) {
   const wrap = document.createElement('div');
   wrap.className = 'fui-ctl fui-nentry';
@@ -641,6 +694,7 @@ function makeNentry(item, node) {
   return wrap;
 }
 
+// Momentary button widget: pointer down sends 1, release sends 0.
 function makeButton(item, node) {
   const wrap = document.createElement('div');
   wrap.className = 'fui-ctl fui-button';
@@ -655,6 +709,7 @@ function makeButton(item, node) {
   return wrap;
 }
 
+// Toggle widget for Faust checkbox controls.
 function makeCheckbox(item, node) {
   const wrap = document.createElement('label');
   wrap.className = 'fui-ctl fui-checkbox';
@@ -666,6 +721,8 @@ function makeCheckbox(item, node) {
   return wrap;
 }
 
+// Meter widget for hbargraph/vbargraph. Values are refreshed by buildFaustUI's
+// shared meter interval.
 function makeMeter(item, node) {
   const wrap = document.createElement('div');
   wrap.className = 'fui-ctl fui-meter';
@@ -691,6 +748,8 @@ function makeMeter(item, node) {
 
 // ---------- Source switching ----------
 
+// Rebuild the input source side of the graph whenever source type, file, device,
+// loop mode, or DSP input arity changes.
 function rewireSource() {
   // tear down old
   if (state.srcNode) { try { state.srcNode.disconnect(); } catch (e) {} disposeSource(state.srcNode); state.srcNode = null; }
@@ -767,6 +826,9 @@ function rewireSource() {
 }
 
 const SRC_DEVICE_KEY = 'faust-srcDevice';
+
+// Populate microphone/input-device selector. Browser labels require an initial
+// getUserMedia permission grant, so this is triggered only on user demand.
 async function enumerateInputDevices() {
   try {
     // First call getUserMedia to obtain permission so device labels are populated
@@ -891,6 +953,8 @@ ui.svgCanvas?.addEventListener('pointerdown', (e) => {
   window.addEventListener('pointermove', move);
   window.addEventListener('pointerup', up);
 });
+
+// Ctrl-wheel zooms the current SVG diagram around its natural scroll position.
 ui.svgCanvas?.parentElement?.addEventListener('wheel', (e) => {
   if (!e.ctrlKey) return;
   e.preventDefault();
@@ -904,6 +968,8 @@ ui.panic.addEventListener('click', () => {
 });
 
 // Master play/stop — invoked by the editor title-bar ▶/⏹ command and by autoplay.
+// Starting ensures the AudioContext exists/resumes, compiles if needed, and
+// tells the extension host to update its playing context.
 async function startPlayback() {
   await ensureCtx();
   if (state.ctx.state === 'suspended') {
@@ -917,6 +983,9 @@ async function startPlayback() {
   syncPanelButton();
   vscode.postMessage({ type: 'state', playing: true });
 }
+
+// Suspend the AudioContext instead of tearing down the graph, so a retained
+// webview can resume quickly and preserve UI state.
 async function stopPlayback() {
   if (state.ctx) try { await state.ctx.suspend(); } catch (e) {}
   state.playing = false;
@@ -935,6 +1004,9 @@ function syncPanelButton() {
     ? 'Toggle the source feeding into Faust (Faust keeps running). Use editor ▶/⏹ to start/stop everything.'
     : 'Start the runner with the editor ▶ button first';
 }
+
+// Toggle only the selected test/audio source feed. This is separate from master
+// playback so synth DSPs and MIDI instruments can keep running.
 function toggleSource() {
   // If master isn't running yet, this button should NOT start it — the editor ▶ button does that.
   // Just toggle the source-enabled flag and reflect it in the UI.
@@ -957,6 +1029,11 @@ syncPanelButton();
 
 // ---------- Message bus ----------
 
+// Main extension-host protocol:
+// - dspCode: compile/hot-reload current Faust source,
+// - editorPlay/editorStop: master transport,
+// - audioFile: decoded file source payload,
+// - log: diagnostic text from the host.
 window.addEventListener('message', async (event) => {
   const msg = event.data;
   if (msg.type === 'dspCode') {
@@ -1003,7 +1080,7 @@ window.addEventListener('message', async (event) => {
   }
 });
 
-// File drop into the panel for input audio
+// File drop into the panel for input audio.
 ['dragover','dragenter'].forEach(t => window.addEventListener(t, (e) => e.preventDefault()));
 window.addEventListener('drop', async (e) => {
   e.preventDefault();
@@ -1019,7 +1096,6 @@ window.addEventListener('drop', async (e) => {
   } catch (err) { log('drop decode: ' + err.message, 'err'); }
 });
 
-// Ask extension to send current DSP source
 // Draggable splitter between params and scope/analyzer
 const vresizer = document.getElementById('vresizer');
 const hresizer = document.getElementById('hresizer');
@@ -1028,6 +1104,7 @@ const PARAMS_KEY = 'faust-paramH';
 const savedH = parseInt(localStorage.getItem(PARAMS_KEY) || '', 10);
 if (!Number.isNaN(savedH) && savedH > 28) grid.style.setProperty('--paramH', savedH + 'px');
 if (vresizer) {
+  // Vertical splitter persists the parameter-pane height in localStorage.
   vresizer.addEventListener('pointerdown', (e) => {
     e.preventDefault();
     vresizer.setPointerCapture(e.pointerId);
@@ -1056,6 +1133,7 @@ if (!Number.isNaN(savedScopeW) && savedScopeW > 0.15 && savedScopeW < 0.85) {
   grid.style.setProperty('--scopeW', (savedScopeW * 100).toFixed(2) + '%');
 }
 if (hresizer) {
+  // Horizontal splitter persists the scope/analyzer width ratio in localStorage.
   hresizer.addEventListener('pointerdown', (e) => {
     e.preventDefault();
     hresizer.setPointerCapture(e.pointerId);
@@ -1080,11 +1158,13 @@ if (hresizer) {
   });
 }
 
-// Silently resume the audio context on any user gesture inside the panel
+// Silently resume the audio context on any user gesture inside the panel. This
+// handles browser autoplay policy after the webview has been hidden/suspended.
 const _silentResume = () => { if (state.ctx && state.ctx.state === 'suspended') state.ctx.resume().catch(() => {}); };
 document.addEventListener('pointerdown', _silentResume, true);
 document.addEventListener('keydown', _silentResume, true);
 
+// Ask the extension host to send the active DSP once the module is ready.
 vscode.postMessage({ type: 'requestDsp' });
 setStatus('ready');
 log('runner ready');

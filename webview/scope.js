@@ -4,6 +4,8 @@
 // cursors with dt/dV readouts, single-shot mode, capture-to-wav of visible window.
 
 export class Scope {
+  // getCapture is an accessor returning the latest post-Faust capture snapshot
+  // from main.js. The scope keeps only UI state and optional single-shot data.
   constructor(canvas, ctlRoot, getCapture) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
@@ -34,6 +36,7 @@ export class Scope {
     this.resize();
   }
 
+  // Match the backing canvas to the rendered size and device pixel ratio.
   resize() {
     const dpr = Math.max(1, window.devicePixelRatio || 1);
     const w = this.canvas.clientWidth;
@@ -43,6 +46,8 @@ export class Scope {
     this.persistImg = null;
   }
 
+  // Build the compact overlay toolbar for timebase, trigger mode, channel mode,
+  // persistence, single-shot capture, and WAV export.
   buildCtl() {
     const root = this.ctlRoot;
     root.innerHTML = '';
@@ -94,6 +99,8 @@ export class Scope {
     this.singleBtn = singleBtn;
   }
 
+  // Cursors are placed by clicking/shift-clicking and dragged in sample units so
+  // their readout stays stable when the canvas is resized.
   installCursors() {
     let dragging = null;
     this.canvas.addEventListener('mousedown', (e) => {
@@ -113,6 +120,8 @@ export class Scope {
     this.canvas.addEventListener('dblclick', () => { this.opts.cursorA = this.opts.cursorB = null; });
   }
 
+  // Convert the selected time/div setting into the number of samples visible
+  // across the 10 horizontal divisions.
   viewSamples() {
     const cap = this.getCapture();
     if (!cap) return 1024;
@@ -120,6 +129,7 @@ export class Scope {
     return Math.max(64, Math.min(samples, cap.l.length));
   }
 
+  // Find the first hysteresis-qualified threshold crossing after holdoff.
   findTrigger(buf, want, hyst, level, holdoff) {
     const N = buf.length;
     let state = 0; // 0=below, 1=above (after hysteresis)
@@ -136,6 +146,8 @@ export class Scope {
     return -1;
   }
 
+  // Animation loop: choose a window from the rolling capture buffer, honor
+  // trigger/single-shot state, then draw the visible samples.
   tick(t) {
     if (!this.run) return;
     requestAnimationFrame((t2) => this.tick(t2));
@@ -164,6 +176,7 @@ export class Scope {
       if (idx >= 0) { trigSample = Math.max(0, total - view * 2) + idx; start = Math.max(0, Math.min(total - view, trigSample - Math.floor(view / 2))); }
     }
 
+    // Single-shot freezes the first triggered window until the user arms again.
     if (this.opts.single && trigSample >= 0) {
       this.singleHeld = true;
       this.captured = { l: cap.l.slice(start, start + view), r: cap.r.slice(start, start + view), sr: cap.sr, start };
@@ -176,6 +189,8 @@ export class Scope {
     this.draw(drawL, drawR, cap.sr);
   }
 
+  // Draw oscilloscope grid, traces, cursors, and status text for the selected
+  // channel mode. X/Y mode plots L against R instead of time.
   draw(L, R, sr) {
     const c = this.ctx;
     const W = this.canvas.width, H = this.canvas.height;
@@ -190,13 +205,13 @@ export class Scope {
       c.fillStyle = '#160E1A';
       c.fillRect(0, 0, W, H);
     }
-    // grid
+    // Scope graticule: 10 horizontal divisions and 8 vertical divisions.
     c.strokeStyle = '#222'; c.lineWidth = 1;
     c.beginPath();
     for (let i = 1; i < 10; i++) { const x = (W * i) / 10; c.moveTo(x, 0); c.lineTo(x, H); }
     for (let i = 1; i < 8; i++)  { const y = (H * i) / 8;  c.moveTo(0, y); c.lineTo(W, y); }
     c.stroke();
-    // 0 line + trigger level
+    // Zero line plus trigger threshold.
     c.strokeStyle = '#333';
     c.beginPath(); c.moveTo(0, H/2); c.lineTo(W, H/2); c.stroke();
     c.strokeStyle = '#5a4630';
@@ -254,7 +269,8 @@ export class Scope {
       if (this.opts.channel === 'R' || this.opts.channel === 'both') drawTrace(R, colR);
     }
 
-    // cursors
+    // Cursors display absolute time from the left edge; when both are present,
+    // the bottom readout shows delta time and reciprocal frequency.
     const drawCursor = (s, color, label) => {
       if (s == null) return;
       const x = (s / L.length) * W;
@@ -273,7 +289,7 @@ export class Scope {
       c.fillText(`Δt ${(dt*1000).toFixed(3)} ms  (${f.toFixed(2)} Hz)`, 8, H - 8);
     }
 
-    // status text
+    // Status text keeps current timebase/channel/trigger visible inside canvas.
     c.fillStyle = '#888'; c.font = `${10 * (window.devicePixelRatio||1)}px ui-monospace,Menlo,monospace`;
     c.fillText(`${this.opts.timeDivMs} ms/div · ${this.opts.channel} · ${this.opts.trigger}${this.singleHeld ? ' · HOLD' : ''}`, 8, 12 * (window.devicePixelRatio||1));
 
@@ -287,6 +303,8 @@ export class Scope {
     }
   }
 
+  // Export the frozen single-shot window when present, otherwise the current
+  // rolling capture buffer, as a stereo 16-bit PCM WAV.
   exportWav() {
     const data = this.singleHeld && this.captured ? this.captured : this.getCapture();
     if (!data) return;
@@ -299,6 +317,7 @@ export class Scope {
   }
 }
 
+// Minimal WAV encoder for Float32 [-1, 1] channel arrays.
 function encodeWav(channels, sr) {
   const N = channels[0].length;
   const numCh = channels.length;

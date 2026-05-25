@@ -6,6 +6,8 @@
 import { FFT, makeWindow } from './fft.js';
 
 export class Analyzer {
+  // getOutCapture/getInCapture are accessors instead of direct buffers so the
+  // analyzer always reads the latest snapshots posted by capture-worklet.js.
   constructor(canvas, ctlRoot, getOutCapture, getInCapture) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
@@ -42,6 +44,7 @@ export class Analyzer {
     this.resize();
   }
 
+  // Keep the backing canvas in device pixels while CSS controls layout size.
   resize() {
     const dpr = Math.max(1, window.devicePixelRatio || 1);
     const w = this.canvas.clientWidth, h = this.canvas.clientHeight;
@@ -49,6 +52,7 @@ export class Analyzer {
     this.canvas.height = Math.max(120, Math.round(h * dpr));
   }
 
+  // Rebuild all FFT-dependent buffers when the user changes FFT size.
   setFFTSize(n) {
     if (n === this.opts.fftSize) return;
     this.opts.fftSize = n;
@@ -61,11 +65,13 @@ export class Analyzer {
     this.peakOut = new Float32Array(this.specOut.length).fill(this.opts.dbMin);
   }
 
+  // Swap the analysis window without touching FFT size or smoothing state.
   setWindow(name) {
     this.opts.window = name;
     this.win = makeWindow(name, this.opts.fftSize);
   }
 
+  // Build the compact overlay toolbar shown when the analyzer pane is hovered.
   buildCtl() {
     const root = this.ctlRoot;
     root.innerHTML = '';
@@ -104,6 +110,8 @@ export class Analyzer {
     );
   }
 
+  // Mouse move shows a frequency readout; click toggles harmonic markers at the
+  // clicked fundamental.
   installCursor() {
     this.canvas.addEventListener('mousemove', (e) => {
       const r = this.canvas.getBoundingClientRect();
@@ -121,22 +129,28 @@ export class Analyzer {
     });
   }
 
+  // Frequency axis is logarithmic and clamped to the visible audio band.
   hzToX(hz, W) {
     const f0 = 20, f1 = 22000;
     const t = (Math.log(Math.max(1, hz)) - Math.log(f0)) / (Math.log(f1) - Math.log(f0));
     return Math.max(0, Math.min(W, t * W));
   }
+
+  // Convert canvas X position back into frequency for cursor interaction.
   xToHz(x) {
     const W = this.canvas.width;
     const f0 = 20, f1 = 22000;
     const t = x / W;
     return Math.exp(Math.log(f0) + t * (Math.log(f1) - Math.log(f0)));
   }
+
+  // Map dB values into canvas Y coordinates using the configured display range.
   dbToY(db, H) {
     const t = (db - this.opts.dbMin) / (this.opts.dbMax - this.opts.dbMin);
     return H - Math.max(0, Math.min(1, t)) * H;
   }
 
+  // Analyze the newest FFT-size window from a capture buffer.
   computeSpectrum(buf, out) {
     if (!buf) return false;
     const N = this.opts.fftSize;
@@ -146,6 +160,8 @@ export class Analyzer {
     return true;
   }
 
+  // Animation loop: read capture buffers, compute spectra, update smoothing and
+  // peak hold, then render the current frame.
   tick(t) {
     if (!this.run) return;
     requestAnimationFrame((t2) => this.tick(t2));
@@ -159,7 +175,10 @@ export class Analyzer {
     if (inCap && (this.opts.overlay || this.opts.response)) okIn = this.computeSpectrum(inCap.l, this.specIn);
     if (!okOut) return;
 
-    // averaging
+    // Averaging modes:
+    // - exp: smooths frame-to-frame motion,
+    // - max: accumulates maximum observed level,
+    // - none: displays the latest spectrum directly.
     if (this.opts.avg === 'exp') {
       const a = this.opts.avgFactor;
       for (let k = 0; k < this.specOut.length; k++) this.avgOut[k] = a * this.avgOut[k] + (1 - a) * this.specOut[k];
@@ -171,7 +190,7 @@ export class Analyzer {
       this.avgOut.set(this.specOut);
       if (okIn) this.avgIn.set(this.specIn);
     }
-    // peak
+    // Peak hold decays in dB/sec so it behaves consistently across frame rates.
     if (this.opts.peakHold) {
       const dec = this.opts.peakDecayDbPerSec * dtSec;
       for (let k = 0; k < this.peakOut.length; k++) {
@@ -182,11 +201,13 @@ export class Analyzer {
     this.draw(outCap.sr);
   }
 
+  // Draw the complete analyzer frame: grid, main trace, optional input/response
+  // overlays, cursor readout, and harmonic markers.
   draw(sr) {
     const c = this.ctx, W = this.canvas.width, H = this.canvas.height;
     c.fillStyle = '#160E1A'; c.fillRect(0, 0, W, H);
 
-    // grid
+    // Log-frequency grid with dB horizontal lines.
     c.strokeStyle = '#1f1f1f'; c.lineWidth = 1; c.beginPath();
     const decades = [10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
     c.font = `${10 * (window.devicePixelRatio||1)}px ui-monospace,Menlo,monospace`;
@@ -211,7 +232,7 @@ export class Analyzer {
     const colIn   = cs.getPropertyValue('--trace-b').trim()    || '#B692C2';
     const colPeak = cs.getPropertyValue('--trace-peak').trim() || '#8F66C6';
     if (this.opts.response) {
-      // frequency response: out/in in dB
+      // Frequency response is displayed as out/in in dB.
       c.strokeStyle = cs.getPropertyValue('--ok').trim() || '#9fd75f'; c.lineWidth = 1.5; c.beginPath();
       let first = true;
       for (let k = 1; k < N; k++) {
@@ -235,7 +256,8 @@ export class Analyzer {
       if (this.opts.overlay) this.drawTrace(this.avgIn, sr, colIn + 'aa', 1.2);
     }
 
-    // cursor
+    // Cursor readout uses parabolic interpolation around the nearest FFT bin for
+    // a more useful frequency/amplitude estimate than raw bin snapping.
     if (this.opts.cursorHz != null) {
       const x = this.hzToX(this.opts.cursorHz, W);
       c.strokeStyle = '#888'; c.setLineDash([2,3]); c.beginPath(); c.moveTo(x,0); c.lineTo(x,H); c.stroke(); c.setLineDash([]);
@@ -269,7 +291,7 @@ export class Analyzer {
       }
     }
 
-    // harmonic markers
+    // Harmonic markers are based on the last clicked fundamental frequency.
     if (this.opts.harmonicHz != null) {
       c.strokeStyle = '#c89048'; c.lineWidth = 1;
       for (let n = 1; n < 32; n++) {
@@ -285,6 +307,7 @@ export class Analyzer {
     }
   }
 
+  // Draw a plain spectrum trace with logarithmic X and dB Y mapping.
   drawTrace(spec, sr, color, lineWidth = 1.4) {
     const c = this.ctx, W = this.canvas.width, H = this.canvas.height;
     const N = spec.length;
@@ -301,6 +324,8 @@ export class Analyzer {
     c.stroke();
   }
 
+  // Draw a brighter output trace by layering translucent strokes before the
+  // final sharp core stroke.
   drawTraceGlow(spec, sr, color, glowColor, lineWidth = 1.4) {
     const c = this.ctx, W = this.canvas.width, H = this.canvas.height;
     const N = spec.length;

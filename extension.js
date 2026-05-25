@@ -1,3 +1,12 @@
+// VS Code extension host entry point.
+//
+// Responsibilities:
+// - create and retain the Faust runner webview in the bottom panel,
+// - send the active .dsp source to the webview and hot-reload it on save,
+// - run local Faust diagnostics and optional HISE linting,
+// - bridge file pickers, status messages, and editor commands between VS Code
+//   and the browser-side runner.
+
 const vscode = require('vscode');
 const path = require('path');
 const fs = require('fs');
@@ -8,6 +17,9 @@ const { lint } = require('./src/hise-lint');
 let diagCollection;
 let runner;
 
+// WebviewViewProvider for the "Faust Runner" panel. The provider is deliberately
+// stateful: VS Code may keep the webview alive while hidden, so it tracks the
+// active document, pending autoplay requests, and the last audio-file directory.
 class FaustRunnerProvider {
   constructor(context) {
     this.context = context;
@@ -19,6 +31,9 @@ class FaustRunnerProvider {
     this._lastAudioDir = savedDir ? vscode.Uri.file(savedDir) : undefined;
   }
 
+  // Called by VS Code when the panel is first created. This builds the full
+  // HTML shell and wires the host/webview message channel. The runtime logic
+  // then lives in webview/main.js.
   resolveWebviewView(webviewView) {
     this.view = webviewView;
     const ext = this.context.extensionPath;
@@ -29,6 +44,8 @@ class FaustRunnerProvider {
       localResourceRoots: [wvRoot]
     };
 
+    // Convert extension files into webview-safe URIs and use a nonce so the
+    // content security policy can allow only scripts emitted by this provider.
     const u = (f) => webviewView.webview.asWebviewUri(vscode.Uri.joinPath(wvRoot, f));
     const nonce = String(Date.now()) + Math.random().toString(36).slice(2);
     const cdn = 'https://cdn.jsdelivr.net';
@@ -141,6 +158,9 @@ class FaustRunnerProvider {
     });
   }
 
+  // Select a document as the runner input. If the panel is already live, send
+  // the source immediately; otherwise reveal the view and let it request the
+  // source once main.js has initialized.
   async loadDoc(doc, { autoplay = false } = {}) {
     this.activeDoc = doc;
     this._pendingAutoplay = autoplay;
@@ -163,6 +183,9 @@ class FaustRunnerProvider {
     }
   }
 
+  // Read the DSP from disk and post it to the browser side. Reading from disk
+  // instead of document.getText() keeps save-triggered reloads aligned with the
+  // exact file Faust diagnostics compile.
   sendDsp(doc, { reload = false, autoplay = false } = {}) {
     if (!this.view) return;
     try {
@@ -180,6 +203,8 @@ class FaustRunnerProvider {
     }
   }
 
+  // Message bridge from the webview. Binary audio files are marshalled as byte
+  // arrays because VS Code postMessage only supports structured-clone payloads.
   async onMessage(msg) {
     if (!this.view) return;
     if (msg.type === 'requestDsp' && this.activeDoc) {
@@ -227,6 +252,7 @@ class FaustRunnerProvider {
   }
 }
 
+// Register commands, diagnostics, the webview provider, and status UI.
 function activate(context) {
   vscode.commands.executeCommand('setContext', 'faustPlaying', false);
   diagCollection = vscode.languages.createDiagnosticCollection('faust');
@@ -254,6 +280,8 @@ function activate(context) {
     })
   );
 
+  // Re-run diagnostics for Faust documents. Edits are debounced so validation
+  // stays responsive without spawning Faust on every keystroke.
   const refresh = async (doc) => {
     if (!doc || doc.languageId !== 'faust') return;
     const diags = [];
@@ -274,16 +302,20 @@ function activate(context) {
   for (const doc of vscode.workspace.textDocuments) refresh(doc);
 
   context.subscriptions.push(
+    // Explicit validation command for the active editor.
     vscode.commands.registerCommand('faust.validate', async () => {
       const ed = vscode.window.activeTextEditor;
       if (ed) await refresh(ed.document);
       vscode.window.showInformationMessage('Faust: validation complete');
     }),
 
+    // Editor title-bar stop command: ask the webview to suspend audio.
     vscode.commands.registerCommand('faust.stop', async () => {
       if (runner.view) runner.view.webview.postMessage({ type: 'editorStop' });
     }),
 
+    // Editor title-bar run command. It accepts either the active editor or a
+    // URI supplied by VS Code menu/context invocations.
     vscode.commands.registerCommand('faust.run', async (uriArg) => {
       try {
         let doc = null;
@@ -305,6 +337,8 @@ function activate(context) {
       }
     }),
 
+    // Native Faust SVG command. This is separate from the in-panel faustwasm SVG
+    // view and uses the configured local faust binary through diagnostics.js.
     vscode.commands.registerCommand('faust.showSVG', async () => {
       const ed = vscode.window.activeTextEditor;
       if (!ed) return;
@@ -332,6 +366,8 @@ function activate(context) {
   );
 }
 
+// Dispose extension-owned resources. VS Code disposes subscriptions registered
+// in activate(); the diagnostic collection is kept here for direct cleanup.
 function deactivate() {
   if (diagCollection) diagCollection.dispose();
 }

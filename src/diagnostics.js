@@ -1,7 +1,15 @@
+// Local Faust compiler helpers for the extension host.
+//
+// The runner panel compiles audio in the browser through faustwasm, but editor
+// diagnostics and the external SVG command use the native Faust binary selected
+// in VS Code settings.
+
 const { execFile } = require('child_process');
 const path = require('path');
 const vscode = require('vscode');
 
+// Read extension settings once per invocation so setting changes are picked up
+// without reloading the extension.
 function getConfig() {
   const c = vscode.workspace.getConfiguration('faust');
   return {
@@ -10,6 +18,8 @@ function getConfig() {
   };
 }
 
+// Execute the configured Faust binary and normalize the result into a non-
+// throwing object. Callers inspect `code`, `stdout`, and `stderr`.
 function runFaust(args, opts = {}) {
   const { binary } = getConfig();
   return new Promise((resolve) => {
@@ -19,6 +29,9 @@ function runFaust(args, opts = {}) {
   });
 }
 
+// Compile the document to C++ and translate Faust's stderr/stdout format into
+// VS Code diagnostics. Only errors for the current document get precise ranges;
+// global warnings are anchored at the top of the file.
 async function validate(document) {
   const { libPath } = getConfig();
   const filePath = document.uri.fsPath;
@@ -51,6 +64,7 @@ async function validate(document) {
   return diags;
 }
 
+// Produce Faust block-diagram SVG files into `outDir` using the local compiler.
 async function compileSVG(filePath, outDir) {
   const { libPath } = getConfig();
   return runFaust(['-I', libPath, '-svg', filePath, '-O', outDir]);

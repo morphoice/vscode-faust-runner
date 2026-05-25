@@ -1,7 +1,12 @@
-// Compact radix-2 Cooley-Tukey FFT, in-place, real input.
-// N must be a power of two. Output: complex pairs (re, im) for k = 0..N/2.
+// FFT and window helpers used by the spectrum analyzer.
+//
+// This is a compact radix-2 Cooley-Tukey implementation tuned for repeated
+// browser-side analysis. It keeps lookup tables and work buffers on the instance
+// so analyzer frames do not allocate during steady-state rendering.
 
 export class FFT {
+  // N must be a power of two. The constructor precomputes twiddle factors and
+  // bit-reversal indexes for all subsequent forward transforms.
   constructor(N) {
     if ((N & (N - 1)) !== 0) throw new Error('FFT size must be power of 2: ' + N);
     this.N = N;
@@ -22,7 +27,8 @@ export class FFT {
     this.im = new Float32Array(N);
   }
 
-  // input: Float32Array length N (real). Result populates this.re/this.im for full N.
+  // Transform a real-valued Float32Array of length N. Results are stored in
+  // this.re/this.im for the full complex spectrum.
   forward(input) {
     const N = this.N;
     const re = this.re, im = this.im;
@@ -49,7 +55,9 @@ export class FFT {
     }
   }
 
-  // Magnitude (linear) into outMag of length N/2+1. Input window applied.
+  // Apply an optional window, run the FFT, and write a one-sided dBFS magnitude
+  // spectrum into outMagDb. Coherent-gain normalization keeps sine amplitudes
+  // readable across different window functions.
   magnitudeDb(input, window, outMagDb, floor = -140) {
     const N = this.N;
     const wIn = new Float32Array(N);
@@ -78,7 +86,7 @@ export class FFT {
   }
 }
 
-// Window functions. All length N, peak 1.
+// Window functions for the analyzer. All windows are length N and peak at 1.
 export function makeWindow(type, N) {
   const w = new Float32Array(N);
   switch (type) {
