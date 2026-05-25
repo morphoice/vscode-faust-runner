@@ -292,18 +292,50 @@ export class Analyzer {
     }
 
     // Harmonic markers are based on the last clicked fundamental frequency.
+    // Low fundamentals can produce many nearby harmonics on the log axis, so
+    // draw every tick but only label markers that have enough horizontal room.
     if (this.opts.harmonicHz != null) {
-      c.strokeStyle = '#c89048'; c.lineWidth = 1;
+      const dpr = window.devicePixelRatio || 1;
+      const markerCol = '#c89048';
+      const labelPadX = 4 * dpr;
+      const labelPadY = 2 * dpr;
+      const labelGap = 8 * dpr;
+      const labelY = H - 16 * dpr;
+      let lastLabelRight = -Infinity;
+      c.font = `${10 * dpr}px ui-monospace,Menlo,monospace`;
+      c.textBaseline = 'middle';
+      c.strokeStyle = markerCol;
+      c.lineWidth = 1;
       for (let n = 1; n < 32; n++) {
         const hz = this.opts.harmonicHz * n;
         if (hz > 22000) break;
         const x = this.hzToX(hz, W);
-        c.beginPath(); c.moveTo(x, H - 8); c.lineTo(x, H); c.stroke();
+        c.globalAlpha = n === 1 ? 0.95 : 0.55;
+        c.beginPath();
+        c.moveTo(x, H - 10 * dpr);
+        c.lineTo(x, H);
+        c.stroke();
         const k = Math.round(hz / binHz);
         const dbv = (k >= 0 && k < N) ? this.avgOut[k] : this.opts.dbMin;
-        c.fillStyle = '#c89048';
-        c.fillText(`h${n} ${dbv.toFixed(0)}`, x + 1, H - 10);
+        const text = `h${n} ${dbv.toFixed(0)}`;
+        const textW = c.measureText(text).width;
+        const tx = Math.min(W - textW - labelPadX * 2, Math.max(0, x + 2 * dpr));
+        const labelLeft = tx;
+        const labelRight = tx + textW + labelPadX * 2;
+        if (n === 1 || labelLeft > lastLabelRight + labelGap) {
+          c.globalAlpha = 1;
+          c.fillStyle = 'rgba(20,16,28,0.82)';
+          c.fillRect(tx, labelY - 5 * dpr - labelPadY, textW + labelPadX * 2, 10 * dpr + labelPadY * 2);
+          c.strokeStyle = 'rgba(200,144,72,0.45)';
+          c.strokeRect(tx + 0.5, labelY - 5 * dpr - labelPadY + 0.5, textW + labelPadX * 2 - 1, 10 * dpr + labelPadY * 2 - 1);
+          c.fillStyle = markerCol;
+          c.fillText(text, tx + labelPadX, labelY);
+          c.strokeStyle = markerCol;
+          lastLabelRight = labelRight;
+        }
       }
+      c.globalAlpha = 1;
+      c.textBaseline = 'alphabetic';
     }
   }
 
