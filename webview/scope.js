@@ -30,6 +30,7 @@ export class Scope {
     this.run = true;
     this.lastFrame = 0;
     this.captured = null;
+    this.triggerHeld = null;
     this.singleHeld = false;
     requestAnimationFrame((t) => this.tick(t));
     window.addEventListener('resize', () => this.resize());
@@ -56,7 +57,7 @@ export class Scope {
     const tdSel = mk(`<select title="ms / division">
       ${[0.05,0.1,0.2,0.5,1,2,5,10,20,50,100].map(v=>`<option value="${v}"${v===this.opts.timeDivMs?' selected':''}>${v} ms/div</option>`).join('')}
     </select>`);
-    tdSel.addEventListener('change', () => { this.opts.timeDivMs = parseFloat(tdSel.value); });
+    tdSel.addEventListener('change', () => { this.opts.timeDivMs = parseFloat(tdSel.value); this.triggerHeld = null; });
 
     const trigSel = mk(`<select title="trigger">
       <option value="rising"  ${this.opts.trigger==='rising'?'selected':''}>↑ rising</option>
@@ -64,10 +65,10 @@ export class Scope {
       <option value="auto"    ${this.opts.trigger==='auto'?'selected':''}>auto</option>
       <option value="free"    ${this.opts.trigger==='free'?'selected':''}>free</option>
     </select>`);
-    trigSel.addEventListener('change', () => { this.opts.trigger = trigSel.value; });
+    trigSel.addEventListener('change', () => { this.opts.trigger = trigSel.value; this.triggerHeld = null; });
 
     const lvl = mk(`<input type="number" step="0.01" min="-1" max="1" value="${this.opts.level}" title="trigger level" style="width:54px">`);
-    lvl.addEventListener('input', () => { this.opts.level = parseFloat(lvl.value) || 0; });
+    lvl.addEventListener('input', () => { this.opts.level = parseFloat(lvl.value) || 0; this.triggerHeld = null; });
 
     const chSel = mk(`<select title="channel">
       <option value="L"    ${this.opts.channel==='L'?'selected':''}>L</option>
@@ -75,7 +76,7 @@ export class Scope {
       <option value="both" ${this.opts.channel==='both'?'selected':''}>L+R</option>
       <option value="xy"   ${this.opts.channel==='xy'?'selected':''}>X/Y</option>
     </select>`);
-    chSel.addEventListener('change', () => { this.opts.channel = chSel.value; });
+    chSel.addEventListener('change', () => { this.opts.channel = chSel.value; this.triggerHeld = null; });
 
     const persist = mk(`<input type="range" min="0" max="0.99" step="0.01" value="${this.opts.persistence}" title="persistence" style="width:60px">`);
     persist.addEventListener('input', () => { this.opts.persistence = parseFloat(persist.value); if (!this.opts.persistence) this.persistImg = null; });
@@ -129,21 +130,49 @@ export class Scope {
     return Math.max(64, Math.min(samples, cap.l.length));
   }
 
-  // Find the first hysteresis-qualified threshold crossing after holdoff.
-  findTrigger(buf, want, hyst, level, holdoff) {
+  // Find the latest hysteresis-qualified threshold crossing in [from, to).
+  // Locking to the latest complete crossing keeps a periodic trace stable as
+  // the rolling capture buffer advances.
+  findTrigger(buf, want, hyst, level, from, to) {
     const N = buf.length;
-    let state = 0; // 0=below, 1=above (after hysteresis)
-    for (let i = holdoff; i < N - 1; i++) {
+    const start = Math.max(1, from);
+    const end = Math.min(N, to);
+    let last = -1;
+    let samplesSince = Infinity;
+    // A slow sine may need many samples to travel from level-hyst to
+    // level+hyst. Keep an armed state instead of requiring both sides of the
+    // hysteresis band to be crossed by two consecutive samples.
+    let armed = want === 'rising'
+      ? buf[start - 1] <= level - hyst
+      : buf[start - 1] >= level + hyst;
+    for (let i = start; i < end; i++) {
       const v = buf[i];
-      if (state === 0 && v > level + hyst) {
-        if (want === 'rising') return i;
-        state = 1;
-      } else if (state === 1 && v < level - hyst) {
-        if (want === 'falling') return i;
-        state = 0;
+      let hit = false;
+      if (want === 'rising') {
+        // Rising trigger state machine:
+        // - a sample at/below level-hyst arms the detector,
+        // - after it is armed, the first sample at/above level+hyst is a hit.
+        // This accepts slow crossings spread across many samples.
+        if (v <= level - hyst) armed = true;
+        else if (armed && v >= level + hyst) hit = true;
+      } else if (want === 'falling') {
+        // Falling trigger is the same state machine with the thresholds
+        // reversed: arm high, then trigger when the waveform reaches low.
+        if (v >= level + hyst) armed = true;
+        else if (armed && v <= level - hyst) hit = true;
+      }
+      if (hit && samplesSince >= this.opts.holdoffSamples) {
+        // Holdoff suppresses immediate retriggers from noisy or ringing
+        // waveforms. Keep scanning so we return the latest valid trigger, not
+        // the first one in the search range.
+        last = i;
+        samplesSince = 0;
+        armed = false;
+      } else {
+        samplesSince++;
       }
     }
-    return -1;
+    return last;
   }
 
   // Animation loop: choose a window from the rolling capture buffer, honor
@@ -156,24 +185,37 @@ export class Scope {
 
     const view = this.viewSamples();
     const total = cap.l.length;
+    // Center the trigger in the visible window. The search ends early enough
+    // that every accepted trigger still has postTrigger samples available in
+    // the rolling capture buffer.
+    const preTrigger = Math.floor(view / 2);
+    const postTrigger = view - preTrigger;
     let start = total - view;
     let trigSample = -1;
 
     if (this.opts.trigger !== 'free' && this.opts.trigger !== 'auto') {
       const trigBuf = this.opts.channel === 'R' ? cap.r : cap.l;
-      const sub = trigBuf.subarray(Math.max(0, total - view * 2), total);
-      const idx = this.findTrigger(sub, this.opts.trigger, this.opts.hysteresis, this.opts.level, this.opts.holdoffSamples);
+      const searchStart = Math.max(0, total - view * 3);
+      const searchEnd = Math.max(searchStart, total - postTrigger);
+      const idx = this.findTrigger(trigBuf, this.opts.trigger, this.opts.hysteresis, this.opts.level, searchStart, searchEnd);
       if (idx >= 0) {
-        trigSample = Math.max(0, total - view * 2) + idx;
-        start = Math.max(0, Math.min(total - view, trigSample - Math.floor(view / 2)));
+        trigSample = idx;
+        start = Math.max(0, Math.min(total - view, trigSample - preTrigger));
       } else if (this.opts.single) {
         return; // wait for trigger
+      } else if (this.triggerHeld) {
+        // At low frequencies there can be many animation frames between two
+        // crossings. Reuse the previous triggered window instead of falling
+        // back to a drifting free-running display.
+        this.draw(this.triggerHeld.l, this.triggerHeld.r, this.triggerHeld.sr);
+        return;
       }
     } else if (this.opts.trigger === 'auto') {
       const trigBuf = this.opts.channel === 'R' ? cap.r : cap.l;
-      const sub = trigBuf.subarray(Math.max(0, total - view * 2), total);
-      const idx = this.findTrigger(sub, 'rising', this.opts.hysteresis, this.opts.level, this.opts.holdoffSamples);
-      if (idx >= 0) { trigSample = Math.max(0, total - view * 2) + idx; start = Math.max(0, Math.min(total - view, trigSample - Math.floor(view / 2))); }
+      const searchStart = Math.max(0, total - view * 3);
+      const searchEnd = Math.max(searchStart, total - postTrigger);
+      const idx = this.findTrigger(trigBuf, 'rising', this.opts.hysteresis, this.opts.level, searchStart, searchEnd);
+      if (idx >= 0) { trigSample = idx; start = Math.max(0, Math.min(total - view, trigSample - preTrigger)); }
     }
 
     // Single-shot freezes the first triggered window until the user arms again.
@@ -182,6 +224,10 @@ export class Scope {
       this.captured = { l: cap.l.slice(start, start + view), r: cap.r.slice(start, start + view), sr: cap.sr, start };
       this.opts.single = false;
       this.singleBtn && this.singleBtn.classList.remove('on');
+    } else if (trigSample >= 0 && this.opts.trigger !== 'auto') {
+      // Keep a copy of the last triggered window. The capture buffer is a
+      // moving ring snapshot, so subarrays would drift after the next message.
+      this.triggerHeld = { l: cap.l.slice(start, start + view), r: cap.r.slice(start, start + view), sr: cap.sr, start };
     }
 
     const drawL = this.singleHeld && this.captured ? this.captured.l : cap.l.subarray(start, start + view);

@@ -325,7 +325,11 @@ function makeCapture(ctx, tag) {
     numberOfInputs: 1,
     numberOfOutputs: 1,
     outputChannelCount: [2],
-    processorOptions: { tag, size: 16384, passThrough: true, postIntervalSec: 0.033 },
+    // The slowest scope timebase displays 100 ms/div across 10 divisions, so
+    // one visible window can be 1 s long. 65536 samples gives about 1.36 s at
+    // 48 kHz, enough room to search for a low-frequency trigger while still
+    // keeping one complete post-trigger window available for drawing.
+    processorOptions: { tag, size: 65536, passThrough: true, postIntervalSec: 0.033 },
   });
   node.port.onmessage = (e) => {
     const d = e.data;
