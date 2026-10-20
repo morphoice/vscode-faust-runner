@@ -14,7 +14,12 @@ import {
   makeMic, makeFile, decodeBytes, disposeSource
 } from './signals.js';
 
-const FAUST_CDN  = 'https://cdn.jsdelivr.net/npm/@grame/faustwasm@0.16.2';
+// faustwasm (which embeds libfaust.wasm) is loaded from jsDelivr in the version
+// given by the faust.faustwasmVersion setting, "latest" by default. The fallback
+// is the version the runner was tested with, used when the requested one cannot
+// be resolved or loaded (offline, CDN error, incompatible package).
+const FAUSTWASM_PKG      = '@grame/faustwasm';
+const FAUSTWASM_FALLBACK = '0.16.2';
 const FAUSTUI_CDN = 'https://cdn.jsdelivr.net/npm/@shren/faust-ui@1';
 
 const vscode = acquireVsCodeApi();
@@ -259,18 +264,47 @@ function silenceCurrentNode() {
 
 // ---------- Faust ----------
 
+// Resolve a version specifier ("latest", a range or an exact version) to an
+// exact version once, so that the ES module and libfaust-wasm.js both come from
+// the same release even while the CDN cache of "latest" is being updated.
+async function resolveFaustwasmVersion(specifier) {
+  if (/^\d+\.\d+\.\d+$/.test(specifier)) return specifier;
+  const url = `https://data.jsdelivr.com/v1/packages/npm/${FAUSTWASM_PKG}/resolved?specifier=${encodeURIComponent(specifier)}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`version lookup failed (HTTP ${res.status})`);
+  const { version } = await res.json();
+  if (!version) throw new Error(`no ${FAUSTWASM_PKG} version matches "${specifier}"`);
+  return version;
+}
+
+async function loadFaustwasm(version) {
+  const base = `https://cdn.jsdelivr.net/npm/${FAUSTWASM_PKG}@${version}`;
+  const mod = await import(`${base}/dist/esm-bundle/index.js`);
+  const { instantiateFaustModuleFromFile, LibFaust, FaustCompiler } = mod;
+  const faustModule = await instantiateFaustModuleFromFile(`${base}/libfaust-wasm/libfaust-wasm.js`);
+  return { mod, compiler: new FaustCompiler(new LibFaust(faustModule)) };
+}
+
 // Load faustwasm and create a compiler singleton for this webview.
 async function ensureFaust() {
   if (state.compiler) return;
   setStatus('loading libfaust…');
-  const mod = await import(`${FAUST_CDN}/dist/esm-bundle/index.js`);
-  const { instantiateFaustModuleFromFile, LibFaust, FaustCompiler } = mod;
-  const faustModule = await instantiateFaustModuleFromFile(`${FAUST_CDN}/libfaust-wasm/libfaust-wasm.js`);
-  const libFaust = new LibFaust(faustModule);
-  state.faustModule = mod;
-  state.compiler = new FaustCompiler(libFaust);
+  const specifier = String(window.__faustInit?.faustwasmVersion || '').trim() || 'latest';
+  let version = null;
+  let loaded;
+  try {
+    version = await resolveFaustwasmVersion(specifier);
+    loaded = await loadFaustwasm(version);
+  } catch (e) {
+    if (version === FAUSTWASM_FALLBACK) throw e;
+    log(`faustwasm "${specifier}"${version ? ` (${version})` : ''} could not be loaded: ${e.message || e}; falling back to ${FAUSTWASM_FALLBACK}`, 'wrn');
+    version = FAUSTWASM_FALLBACK;
+    loaded = await loadFaustwasm(version);
+  }
+  state.faustModule = loaded.mod;
+  state.compiler = loaded.compiler;
   setStatus('libfaust ready', 'ok');
-  log('libfaust loaded');
+  log(`libfaust ${state.compiler.version()} loaded (faustwasm ${version})`);
 }
 
 // Create the AudioContext and install the capture worklet. The multiple

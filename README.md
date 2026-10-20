@@ -6,7 +6,7 @@ Optional HISE plugin lint catches HISE-specific gotchas (`freq`/`gate`/`gain` ma
 
 ## Features
 
-- **Live compile** via `libfaust.wasm` from the CDN — no native Faust install required for the runner panel. (Editor diagnostics and block-diagram SVG do use the local `faust` binary.)
+- **Live compile** via `libfaust.wasm` from the CDN (latest `@grame/faustwasm` release by default, see `faust.faustwasmVersion`) — no native Faust install required for the runner panel. (Editor diagnostics and block-diagram SVG do use the local `faust` binary.)
 - **Bottom-panel webview** alongside Terminal / Debug Console. Survives panel hide / show.
 - **Test signal palette**: silence, white/pink noise, sine, log sweep, impulse train, click train, microphone, **drag-drop any audio file** (or pick via dialog).
 - **MIDI input**: WebMIDI hardware + on-screen QWERTY keyboard (`a`–`'` rows; `z`/`x` shift octave).
@@ -57,6 +57,7 @@ Or use `open -n -a "Visual Studio Code" --args --extensionDevelopmentPath="$(pwd
 | `faust.libraryPath` | `""` | Passed to the compiler as `-I`. Leave empty to use the compiler's built-in default. |
 | `faust.hiseLint` | `true` | Layer HISE rules on top of regular diagnostics. Rules only activate inside HISE-shaped folders; harmless for non-HISE projects. |
 | `faust.polyphony` | `8` | Voice count when **poly** is enabled in the runner. |
+| `faust.faustwasmVersion` | `latest` | Version of `@grame/faustwasm` (and so of `libfaust.wasm`) loaded by the runner panel. `latest` follows the latest release; an exact version such as `0.19.0` pins one. Falls back to the tested version if it cannot be loaded. The loaded versions are printed in the runner log. Reload the window to apply a change. |
 
 ## Known limitations
 
