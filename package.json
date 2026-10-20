@@ -65,6 +65,11 @@
           "type": "integer",
           "default": 8,
           "description": "Number of voices when polyphonic mode is enabled in the runner."
+        },
+        "faust.faustwasmVersion": {
+          "type": "string",
+          "default": "latest",
+          "markdownDescription": "Version of `@grame/faustwasm` (which embeds `libfaust.wasm`) loaded from jsDelivr by the runner panel. `latest` follows the latest published release; an exact version such as `0.19.0` pins one. If it cannot be loaded, the runner falls back to the version it was tested with. Takes effect when the runner panel is reloaded (e.g. `Developer: Reload Window`)."
         }
       }
     }

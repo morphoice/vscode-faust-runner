@@ -59,7 +59,7 @@ class FaustRunnerProvider {
   style-src ${webviewView.webview.cspSource} 'unsafe-inline' ${cdn};
   font-src ${cdn};
   script-src 'nonce-${nonce}' ${webviewView.webview.cspSource} ${cdn} blob: data: 'wasm-unsafe-eval' 'unsafe-eval';
-  connect-src ${webviewView.webview.cspSource} ${cdn} blob: data:;
+  connect-src ${webviewView.webview.cspSource} ${cdn} https://data.jsdelivr.com blob: data:;
   worker-src ${webviewView.webview.cspSource} blob: data:;
   child-src ${webviewView.webview.cspSource} blob: data:;
   media-src blob: data:;
@@ -139,7 +139,10 @@ class FaustRunnerProvider {
   <div id="kbdRow"><div id="kbd"></div></div>
 </div>
 <script type="module" nonce="${nonce}">
-  window.__faustInit = { voices: ${vscode.workspace.getConfiguration('faust').get('polyphony')} };
+  window.__faustInit = {
+    voices: ${vscode.workspace.getConfiguration('faust').get('polyphony')},
+    faustwasmVersion: ${JSON.stringify(String(vscode.workspace.getConfiguration('faust').get('faustwasmVersion') || 'latest')).replace(/</g, '\\u003c')}
+  };
 </script>
 <script type="module" nonce="${nonce}" src="${u('main.js')}"></script>
 </body></html>`;
